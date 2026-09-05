@@ -35,6 +35,19 @@ def convert_type(entry):
 
     return fixTypeName(entry_type)
 
+def translate_expr(expr, enums_info):
+    expr = str(expr)
+
+    enums = set(re.findall(r"(\w+)::", expr))
+    for enum_name in enums:
+        if enum_name in enums_info:
+            name = convert_enum_name(enum_name, enums_info[enum_name])
+            expr = expr.replace(enum_name + "::", name + "::")
+
+    expr = expr.replace("_root", "parent")
+
+    return expr
+
 def fetch_type_info(type_name, types_info):
     return types_info.setdefault(type_name, {"type": type_name})
 
@@ -193,9 +206,7 @@ def handle_seq(seq, type_info, types_info, enums_info):
 
                 entry_type = f"type::Magic<\"{encoded_string}\">"
         elif "size" in entry:
-            array_size = entry["size"]
-            if isinstance(array_size, str):
-                array_size = array_size.replace("_root", "parent")
+            array_size = translate_expr(entry["size"], enums_info)
             entry_type = "u8"
 
         if re.compile("^b[0-9]+$").match(entry_type):
@@ -205,7 +216,8 @@ def handle_seq(seq, type_info, types_info, enums_info):
         new_line = ""
 
         if "if" in entry:
-            new_line += f"    if ({entry['if']})\n    "
+            condition = translate_expr(entry['if'], enums_info)
+            new_line += f"    if ({condition})\n    "
         
         if array_size != "":
             new_line += f"    {entry_type} {name}[{array_size}];"
