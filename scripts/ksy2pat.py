@@ -52,6 +52,34 @@ def convert_type(entry):
 
     return fixTypeName(entry_type)
 
+def translate_expr(expr):
+    expr = str(expr)
+
+    return expr
+
+def fetch_type_info(type_name, types_info):
+    return types_info.setdefault(type_name, {"type": type_name})
+
+def collect_entries_type_info(entries, parent_type, types_info):
+    if not entries:
+        return
+
+    if isinstance(entries, dict):
+        entries = [dict(entry, id=id) for id, entry in entries.items()]
+
+    type_info = fetch_type_info(parent_type, types_info)
+    type_info["entries"] = entries
+
+def collect_type_info(data, top_level_struct_name):
+    types_info = {}
+    collect_entries_type_info(data.get("seq"), top_level_struct_name, types_info)
+    collect_entries_type_info(data.get("instances"), top_level_struct_name, types_info)
+    for parent_type, entry in data.get("types", {}).items():
+        collect_entries_type_info(entry.get("seq"), parent_type, types_info)
+        collect_entries_type_info(entry.get("instances"), parent_type, types_info)
+
+    return types_info
+
 def add_line(line, indent = 0):
     global output
     output += (" " * indent) + line + "\n"
@@ -81,6 +109,12 @@ def get_entry_type_size(entry):
 
     return entry_type, array_size
 
+def get_entry_types(entry):
+    entry_types = {}
+    entry_types[None], array_size = get_entry_type_size(entry)
+
+    return entry_types, array_size
+
 def handle_meta_xref(xref):
     if "mime" in xref:
         add_line(f"#pragma MIME {xref['mime']}")
@@ -103,18 +137,19 @@ def handle_meta(meta):
         global top_level_struct_name
         top_level_struct_name = str(meta["id"]).capitalize()
 
-def handle_types(types):
+def handle_types(types, types_info):
     result = ""
     for type in types:
         entry = types[type]
 
+        type_info = types_info.get(type, {})
         is_bitfield = False
         lines = ""
 
         if "seq" in entry:
-            is_bitfield, lines = handle_seq(entry["seq"])
+            is_bitfield, lines = handle_seq(entry["seq"], type_info, types_info)
         if "instances" in entry:
-            lines += handle_instances(entry["instances"])
+            lines += handle_instances(entry["instances"], type_info, types_info)
 
         result += struct_decl_header(type, is_bitfield)
 
@@ -124,52 +159,81 @@ def handle_types(types):
 
     return result
 
-def handle_instances(instances):
+def handle_instances(instances, type_info, types_info):
     result = ""
+    restore_offset = False
     for name in instances:
         instance = instances[name]
-        result += f"    auto {name} = {instance['value']} [[export]];"
-        result += format_comment(instance.get("doc", ""))
-        result += "\n"
+        if "value" in instance:
+            result += f"    auto {name} = {instance['value']} [[export]];"
+            result += format_comment(instance.get("doc", ""))
+            result += "\n"
+        elif "pos" in instance:
+            if not restore_offset:
+                result += "    auto original_offset = $;\n"
+                restore_offset = True
+            is_substream = type_info.get("as_substream", False)
+            offset = "offset" if is_substream else "std::mem::base_address()"
+            result += f"    $ = {offset} + {translate_expr(instance["pos"])};\n"
+            line, _ = get_entry_line(name, instance, type_info, types_info)
+            result += line + "\n"
+        else:
+            raise NotImplementedError("Not implemented! Instance '{name}' without pos!")
+
+    if restore_offset:
+        result += "    $ = original_offset;\n"
 
     return result.rstrip()
 
-
-def handle_seq(seq):
-    result = ""
-
+def get_entry_line(name, entry, type_info, types_info):
     is_bitfield = False
-    lines = []
+    docs = ""
+    new_line = ""
+    indent = "    "
+    indent_count = 1
 
-    for entry in seq:
-        name = entry["id"]
+    if "doc" in entry:
+        docs = entry["doc"]
+
+    entry_types, array_size = get_entry_types(entry)
+    match = None
+    if isinstance(entry.get("type"), dict):
+        match = entry["type"]["switch-on"]
+
+    for expr, entry_type in entry_types.items():
         bitfield_field_size = ""
-        docs = ""
-
-        if "doc" in entry:
-            docs = entry["doc"]
-
-        entry_type, array_size = get_entry_type_size(entry)
-
         if re.compile("^b[0-9]+$").match(entry_type):
             is_bitfield = True
             bitfield_field_size = int(entry_type[1:])
 
-        new_line = ""
-
         if "if" in entry:
-            new_line += f"    if ({entry['if']})\n    "
-        
-        new_line += "    " + declare_variable(name, entry_type, array_size, bitfield_field_size)
+            condition = translate_expr(entry['if'])
+            new_line += indent * indent_count + f"if ({condition})\n"
+            indent_count += 1
 
-        new_line += format_comment(docs)
+        new_line += indent * indent_count + declare_variable(name, entry_type, array_size, bitfield_field_size)
 
+    new_line += format_comment(docs)
+
+    return new_line, is_bitfield
+
+def handle_seq(seq, type_info, types_info):
+    result = ""
+
+    any_bitfield = False
+    lines = []
+
+    for entry in seq:
+        name = entry["id"]
+        new_line, is_bitfield = get_entry_line(name, entry, type_info, types_info)
+        if is_bitfield:
+            any_bitfield = True
         lines.append(new_line)
 
     for line in lines:
         result += line + "\n"
 
-    return (is_bitfield, result)
+    return (any_bitfield, result)
 
 def generate_imhex_pattern(data):
     global top_level_struct
@@ -179,13 +243,15 @@ def generate_imhex_pattern(data):
     if "meta" in data:
        handle_meta(data["meta"])
 
+    types_info = collect_type_info(data, top_level_struct_name)
+
     add_line("")
 
     if "types" in data:
-        add_line(handle_types(data["types"]))
+        add_line(handle_types(data["types"], types_info))
     
     if "seq" in data:
-        add_line(handle_types({ top_level_struct_name: { "seq": data["seq"] } }))
+        add_line(handle_types({ top_level_struct_name: { "seq": data["seq"] } }, types_info))
 
     add_line(f"{fixTypeName(top_level_struct_name)} {fixTypeName(top_level_struct_name).lower()} @ 0x00;\n")
 
