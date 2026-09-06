@@ -57,10 +57,12 @@ def convert_type(entry):
     return fixTypeName(entry_type)
 
 def translate_expr(expr):
-    if isinstance(expr, str):
-        expr = expr.replace("_root", "parent")
+    expr = str(expr)
+    expr = expr.replace("_io.size", "std::mem::size()")
+    expr = expr.replace("_io.pos", "($ - std::mem::base_address())")
+    expr = expr.replace("_root", "parent")
 
-    return str(expr)
+    return expr
 
 def update_type_size(entry_type, array_size, entry):
     if "type" not in entry or entry.get("type") == "str":
