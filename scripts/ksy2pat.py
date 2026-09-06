@@ -56,6 +56,12 @@ def convert_type(entry):
 
     return fixTypeName(entry_type)
 
+def translate_expr(expr):
+    if isinstance(expr, str):
+        expr = expr.replace("_root", "parent")
+
+    return str(expr)
+
 def add_line(line, indent = 0):
     global output
     output += (" " * indent) + line + "\n"
@@ -143,9 +149,7 @@ def handle_seq(seq):
 
                 entry_type = f"type::Magic<\"{encoded_string}\">"
         elif "size" in entry:
-            array_size = entry["size"]
-            if isinstance(array_size, str):
-                array_size = array_size.replace("_root", "parent")
+            array_size = translate_expr(entry["size"])
             entry_type = "u8"
 
         if re.compile("^b[0-9]+$").match(entry_type):
