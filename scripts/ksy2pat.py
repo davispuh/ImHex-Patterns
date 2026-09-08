@@ -131,12 +131,11 @@ def collect_seq_type_info(seq, parent_type, types_info):
             child_type_info = fetch_type_info(type_name, types_info)
             child_type_info.setdefault("parents", set()).add(parent_type)
 
-        if "size" in entry:
-            if "_io." in str(entry["size"]):
-                type_info["uses_io"] = True
+        if ("size" in entry and "_io." in str(entry["size"])) or entry.get("size-eos", False):
+            type_info["uses_io"] = True
 
-            if child_type_info:
-                child_type_info["as_padded"] = True
+        if child_type_info and ("size" in entry or entry.get("size-eos", False)):
+            child_type_info["as_padded"] = True
 
 def collect_type_info(data, top_level_struct_name):
     types_info = {}
@@ -258,6 +257,9 @@ def handle_seq(seq, type_info, types_info):
                 entry_type = f"type::Magic<\"{encoded_string}\">"
         elif "size" in entry:
             array_size = translate_expr(entry["size"], is_substream)
+            entry_type, array_size = update_type_size(entry_type, array_size, entry)
+        elif entry.get("size-eos", False):
+            array_size = "offset + size - $" if is_substream else "std::mem::base_address() + std::mem::size() - $"
             entry_type, array_size = update_type_size(entry_type, array_size, entry)
         elif "as_substream" in types_info.get(entry.get("type"), {}):
             offset = "offset" if is_substream else "std::mem::base_address()"
